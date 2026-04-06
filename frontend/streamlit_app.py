@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit.components.v1 as components
 from datetime import datetime
 import time
 import os
@@ -101,9 +102,18 @@ st.markdown(
     [data-testid="stMetricLabel"] {
         color: #cbd5e1;
         font-weight: 600;
+        font-size: 0.82rem;
     }
     [data-testid="stMetricValue"] {
         color: #f8fafc;
+        font-size: 1.9rem;
+        line-height: 1.05;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    [data-testid="stMetricDelta"] {
+        font-size: 0.82rem;
     }
 
     .stButton > button {
@@ -490,6 +500,56 @@ def compute_surges(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def compact_number(value: float) -> str:
+    """Format large numbers for compact metric cards."""
+    n = float(value)
+    if abs(n) >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.2f}B"
+    if abs(n) >= 1_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    if abs(n) >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return f"{n:.0f}"
+
+
+def investor_interpretation(change: float, rel_vol: float, news_score: float, surge_score: float, momentum: float) -> str:
+    """Return a concise one-line investor interpretation from current signals."""
+    if surge_score >= 70 and change > 0 and rel_vol >= 1.5 and news_score >= 55:
+        return "Bullish catalyst setup: momentum + participation + sentiment are aligned; look for continuation entries on pullbacks."
+    if surge_score >= 70 and change < 0 and rel_vol >= 1.5 and news_score <= 45:
+        return "Bearish catalyst setup: downside pressure is broad and active; avoid chasing longs without reversal confirmation."
+    if rel_vol >= 2.0 and abs(change) >= 2.0:
+        return "High-volatility regime: fast moves can continue, but position size and stop discipline matter more than prediction."
+    if rel_vol < 1.0 and abs(change) < 1.0 and 40 <= news_score <= 60:
+        return "Quiet tape: no strong edge yet; better to wait for volume expansion or a fresh headline catalyst."
+    if momentum > 1.0 and news_score > 55:
+        return "Constructive momentum: trend is improving with supportive narrative; watch for confirmation above recent highs."
+    if momentum < -1.0 and news_score < 45:
+        return "Weak momentum: sellers remain in control; favor defense until price structure stabilizes."
+    return "Mixed signals: keep this on watchlist and wait for either volume confirmation or cleaner trend direction."
+
+
+def render_copy_link_widget(url: str, key: str) -> None:
+    """Render a client-side copy button for sharing the deployed app URL."""
+    safe_url = (url or "").replace("\\", "\\\\").replace("'", "\\'")
+    components.html(
+        f"""
+        <div style=\"display:flex;gap:8px;align-items:center;\">
+            <button
+                onclick=\"navigator.clipboard.writeText('{safe_url}').then(() => {{
+                    const msg = document.getElementById('copy-msg-{key}');
+                    msg.innerText = 'Copied';
+                    setTimeout(() => msg.innerText = '', 1800);
+                }});\"
+                style=\"background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);border-radius:8px;padding:6px 10px;cursor:pointer;font-weight:600;\"
+            >Copy Link</button>
+            <span id=\"copy-msg-{key}\" style=\"color:#34d399;font-size:12px;\"></span>
+        </div>
+        """,
+        height=42,
+    )
+
+
 # compute surge scores for current universe
 if not df.empty:
     df = compute_surges(df)
@@ -497,9 +557,21 @@ if not df.empty:
 # -----------------------
 # Layout: Top header + body
 # -----------------------
-_hcol1, _hcol3, _hcol4 = st.columns([3, 0.4, 0.4])
+app_share_url = st.secrets.get("APP_PUBLIC_URL", os.environ.get("APP_PUBLIC_URL", ""))
+
+_hcol1, _hcol2, _hcol3, _hcol4 = st.columns([2.8, 0.75, 0.4, 0.4])
 with _hcol1:
     st.markdown(f"<div class='header'>Healthcare Terminal · {datetime.now().strftime('%b %d %H:%M:%S')}</div>", unsafe_allow_html=True)
+with _hcol2:
+    with st.popover("🔗"):
+        st.markdown("**Share Dashboard**")
+        if app_share_url:
+            st.caption("Copy and send this link:")
+            st.code(app_share_url)
+            render_copy_link_widget(app_share_url, "header-share")
+        else:
+            st.info("Set APP_PUBLIC_URL in Streamlit secrets to enable one-click sharing.")
+            st.caption("Temporary fallback: copy your browser URL directly.")
 with _hcol3:
     with st.popover("⚙️"):
         st.markdown("**Refresh Settings**")
@@ -610,6 +682,11 @@ with tab1:
                     _ms = market_df.loc[market_df['Ticker'] == r['Ticker'], 'SurgeScore']
                     _mscore = int(_ms.iloc[0]) if not _ms.empty else 0
                     st.markdown(f"SurgeScore: **{_mscore}/100**")
+                    _m_relvol = float(r.get("RelVol", 0.0))
+                    _m_news = float(r.get("NewsScore", 50.0))
+                    _m_momentum = float(r.get("Momentum", 0.0))
+                    st.caption("Investor Interpretation:")
+                    st.info(investor_interpretation(float(r["Change"]), _m_relvol, _m_news, float(_mscore), _m_momentum))
                     st.caption("Select ticker in watchlist to load full chart")
 
         st.markdown("---")
@@ -631,6 +708,11 @@ with tab1:
                     _hs = market_df.loc[market_df['Ticker'] == r['Ticker'], 'SurgeScore']
                     _hscore = int(_hs.iloc[0]) if not _hs.empty else 0
                     st.caption(f"SurgeScore {_hscore}/100")
+                    _h_relvol = float(r.get("RelVol", 0.0))
+                    _h_news = float(r.get("NewsScore", 50.0))
+                    _h_momentum = float(r.get("Momentum", 0.0))
+                    st.caption("Investor Interpretation:")
+                    st.info(investor_interpretation(float(r["Change"]), _h_relvol, _h_news, float(_hscore), _h_momentum))
 
     with center:
         sel = st.session_state.selected
@@ -698,12 +780,16 @@ Hover any point to see exact date + price values.
                     st.markdown(f"**{sel} — Intraday Price**")
                     st.markdown(f"Current price **${s['Price']}**, {'+' if s['Change'] > 0 else ''}{s['Change']}% from today's open.")
                     st.markdown("The delta arrow and color show movement direction relative to today's open.")
+                    st.caption("Investor Interpretation:")
+                    st.info(investor_interpretation(float(s["Change"]), rel_vol, news_score, float(score), momentum))
             with col_b:
-                st.metric("Volume", f"{s['Volume']:,}")
+                st.metric("Volume", compact_number(s["Volume"]))
                 with st.popover("ℹ️ Volume"):
                     st.markdown(f"**{sel} — Today's Volume**")
                     st.markdown(f"**{s['Volume']:,}** shares traded intraday so far.")
                     st.markdown(f"Relative vs 60-day avg: **{rel_vol:.2f}x**. Above 1.5x = elevated interest; above 3x = unusual activity.")
+                    st.caption("Investor Interpretation:")
+                    st.info(investor_interpretation(float(s["Change"]), rel_vol, news_score, float(score), momentum))
             with col_d:
                 st.metric("News Sentiment", f"{news_score:.0f}/100")
                 with st.popover("ℹ️ Sentiment"):
@@ -711,6 +797,8 @@ Hover any point to see exact date + price values.
                     st.markdown(f"Score: **{news_score:.0f}/100** ({news_tone} tone)")
                     st.progress(int(news_score))
                     st.markdown("Scored using VADER NLP on recent headlines. 0 = very negative · 50 = neutral · 100 = very positive. Sourced from yfinance + NewsAPI.")
+                    st.caption("Investor Interpretation:")
+                    st.info(investor_interpretation(float(s["Change"]), rel_vol, news_score, float(score), momentum))
             with col_c:
                 with st.popover(f"Surge Score: {score}"):
                     st.markdown(f"### {sel} · SurgeScore {score}/100 — {surge_label}")
@@ -724,6 +812,8 @@ Hover any point to see exact date + price values.
                     st.progress(min(int(opt_score), 100))
                     st.divider()
                     st.markdown(investor_msg_sel)
+                    st.caption("Investor Interpretation:")
+                    st.info(investor_interpretation(float(s["Change"]), rel_vol, news_score, float(score), momentum))
                     
                     # Show actionable news stories driving sentiment
                     st.markdown("---")
