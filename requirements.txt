@@ -1,0 +1,11 @@
+pandas
+yfinance
+requests
+streamlit
+python-dotenv
+numpy
+matplotlib
+boto3
+plotly
+vaderSentiment
+requests
