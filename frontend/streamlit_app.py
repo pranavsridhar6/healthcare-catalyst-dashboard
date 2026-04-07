@@ -571,7 +571,7 @@ with _hcol2:
             render_copy_link_widget(app_share_url, "header-share")
         else:
             st.info("Set APP_PUBLIC_URL in Streamlit secrets to enable one-click sharing.")
-            st.caption("Temporary fallback: copy your browser URL directly.")
+            st.caption("Use your deployed app URL (for example, https://your-app-name.streamlit.app), not streamlit.io.")
 with _hcol3:
     with st.popover("⚙️"):
         st.markdown("**Refresh Settings**")
