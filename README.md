@@ -54,3 +54,8 @@ Why `APP_PUBLIC_URL` matters:
 
 - Wrong: sharing `streamlit.io` or a generic Streamlit page.
 - Right: sharing your deployed app URL (`*.streamlit.app`).
+
+## Sample Data set
+sample_data/
+    prices.csv
+    catalysts.csv
