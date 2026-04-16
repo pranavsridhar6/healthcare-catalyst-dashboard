@@ -59,3 +59,10 @@ Why `APP_PUBLIC_URL` matters:
 sample_data/
     prices.csv
     catalysts.csv
+
+## Future Plans:
+- Add ML‑based catalyst classification
+- Add LLM‑powered summarization
+- Add AWS deployment
+- Add real‑time data ingestion
+
