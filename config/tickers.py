@@ -8,10 +8,15 @@ TICKERS = [
     "BMY",
     "GILD",
     "VRTX",
-    "BIIB"
+    "BIIB",
+    "MDT",
+    "ISRG",
+    "SYK"
 ]
 
 RELATED = {
     "NVO": ["LLY"],
-    "LLY": ["NVO"]
+    "LLY": ["NVO"],
+    "MRK": ["BMY"],
+    "BMY": ["MRK"]
 }
