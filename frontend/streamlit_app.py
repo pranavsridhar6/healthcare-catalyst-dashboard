@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit.components.v1 as components
 from datetime import datetime
@@ -17,7 +16,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from config import categories
+from config import categories, tickers
 
 st.set_page_config(layout="wide")
 
@@ -317,7 +316,7 @@ st.markdown(
 # -----------------------
 # Config
 # -----------------------
-TICKERS = ["NVO", "LLY", "PFE", "MRK", "JNJ", "ABBV", "BMY", "AMGN", "GILD"]
+TICKERS = tickers.TICKERS
 
 
 @st.cache_data(ttl=180)
@@ -557,7 +556,22 @@ if not df.empty:
 # -----------------------
 # Layout: Top header + body
 # -----------------------
-app_share_url = st.secrets.get("APP_PUBLIC_URL", os.environ.get("APP_PUBLIC_URL", ""))
+def _get_secret(name: str, default: str = "") -> str:
+    """Read a value from Streamlit secrets, falling back to env vars.
+
+    st.secrets raises if no secrets.toml exists anywhere, which is the normal
+    case for a fresh local clone, so this swallows that and falls through.
+    """
+    try:
+        value = st.secrets.get(name)
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.environ.get(name, default)
+
+
+app_share_url = _get_secret("APP_PUBLIC_URL")
 
 _hcol1, _hcol2, _hcol3, _hcol4 = st.columns([2.8, 0.75, 0.4, 0.4])
 with _hcol1:
@@ -605,7 +619,7 @@ if not market_df.empty and st.session_state.selected not in market_df["Ticker"].
 st.markdown("---")
 
 # Tabs for each dashboard mode
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Market", "Monitoring / Ops", "Product Analytics", "Executive KPI", "Sales / CRM", "FP&A"])
+tab1, tab2, tab3 = st.tabs(["Market", "Monitoring / Ops", "Executive KPI"])
 
 # ===== TAB 1: MARKET VIEW (DEFAULT) =====
 with tab1:
@@ -886,106 +900,214 @@ with tab2:
     render_monitoring(df)
 
 
-# ===== TAB 3: PRODUCT ANALYTICS =====
+# ===== TAB 3: EXECUTIVE KPI =====
 with tab3:
-    def render_product_analytics():
-        st.markdown("**Product Analytics — cohort retention & funnel (synthetic demo)**")
-        _ret_hdr, _ret_info = st.columns([5, 0.5])
-        _ret_hdr.markdown("**Cohort Retention**")
-        with _ret_info:
-            with st.popover("ℹ️"):
-                st.markdown("**Cohort Retention Chart**")
-                st.markdown("Shows % of users from each cohort still active after N days. A steep drop = poor retention. A flat line = strong stickiness. Each cohort = a different acquisition batch.")
-        days = list(range(0, 30, 5))
-        cohorts = {f"Cohort {i}": np.maximum(100 - np.array(days) - i * 2, 10) for i in range(3)}
-        ret_df = pd.DataFrame(cohorts, index=days).reset_index().melt(id_vars=["index"])
-        ret_df.columns = ["Days", "Cohort", "Retention"]
-        fig = px.line(ret_df, x="Days", y="Retention", color="Cohort", markers=True)
-        fig.update_layout(plot_bgcolor="#071027", paper_bgcolor="#071027", font_color="#cbd5e1")
-        st.plotly_chart(fig, use_container_width=True)
-
-        _fn_hdr, _fn_info = st.columns([5, 0.5])
-        _fn_hdr.markdown("**Conversion Funnel**")
-        with _fn_info:
-            with st.popover("ℹ️"):
-                st.markdown("**Conversion Funnel**")
-                st.markdown("Shows user drop-off at each stage of the journey. Wide-to-narrow shape is normal. Large gaps between stages = conversion bottlenecks worth investigating.")
-        funnel_df = pd.DataFrame({"stage": ["Visited", "Signed Up", "Activated", "Paid"], "value": [10000, 2400, 1200, 300]})
-        ff = px.funnel(funnel_df, x="value", y="stage")
-        st.plotly_chart(ff, use_container_width=True)
-
-    render_product_analytics()
-
-
-# ===== TAB 4: EXECUTIVE KPI =====
-with tab4:
     def render_executive_kpi(data: pd.DataFrame):
-        st.markdown("**Executive KPI — focused cards & sparklines**")
-        k1, k2, k3 = st.columns(3)
-        mom = round(data["Change"].mean() if not data.empty else 0, 2)
-        total_vol = int(data["Volume"].sum() if not data.empty else 0)
-        with k1:
-            st.metric("Avg Momentum", f"{mom}%", delta=f"{mom/2:.2f}%")
-            with st.popover("ℹ️ Avg Momentum"):
-                st.markdown("**Average Momentum**")
-                st.markdown(f"Mean intraday % change across all **{len(data)}** watched tickers today.")
-                st.markdown("Positive = universe net bullish today. Negative = broad selling pressure.")
-        with k2:
-            st.metric("Universe Vol", f"{total_vol:,}")
-            with st.popover("ℹ️ Universe Vol"):
-                st.markdown("**Universe Volume**")
-                st.markdown(f"Total shares traded today across **{len(data)}** tickers: **{total_vol:,}**.")
-                st.markdown("Elevated universe volume can signal broad institutional activity or a macro/sector event.")
-        with k3:
-            st.metric("Watchlist", len(data))
-            with st.popover("ℹ️ Watchlist"):
-                st.markdown("**Watchlist Size**")
-                st.markdown(f"**{len(data)}** tickers currently active in the monitoring universe.")
-                st.markdown("Configure the ticker list in config/tickers.py.")
+        st.markdown("<div class='panel-title'>Executive KPI — Session Summary</div>", unsafe_allow_html=True)
+
+        if data.empty:
+            st.warning("No market data currently available.")
+            return
+
+        data = data.copy()
+        for col, default in (("RelVol", 0.0), ("NewsScore", 50.0), ("SurgeScore", 0.0), ("Momentum", 0.0)):
+            if col not in data.columns:
+                data[col] = default
+
+        # ---------- headline aggregates ----------
+        n = len(data)
+        adv = int((data["Change"] > 0).sum())
+        dec = int((data["Change"] < 0).sum())
+        flat = n - adv - dec
+        breadth_pct = (adv / n) * 100.0
+        avg_move = float(data["Change"].mean())
+        total_vol = int(data["Volume"].sum())
+        avg_relvol = float(data["RelVol"].mean())
+        avg_news = float(data["NewsScore"].mean())
+        avg_surge = float(data["SurgeScore"].mean())
+        catalyst_count = int((data["SurgeScore"] >= 70).sum())
+        dispersion = float(data["Change"].std()) if n > 1 else 0.0
+        risk_flags = int(((data["Change"].abs() >= 3.0) | (data["RelVol"] >= 2.0)).sum())
+
+        # ---------- row 1: market state ----------
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        with r1c1:
+            st.metric("Avg Move", f"{avg_move:+.2f}%")
+            with st.popover("ℹ️"):
+                st.markdown("**Average Move**")
+                st.markdown(f"Mean intraday % change across all **{n}** tickers in the universe.")
+                st.markdown("The single fastest read on whether the sector is net bid or net offered today.")
+        with r1c2:
+            st.metric("Breadth", f"{breadth_pct:.0f}%", delta=f"{adv} up / {dec} down")
+            with st.popover("ℹ️"):
+                st.markdown("**Breadth**")
+                st.markdown(f"Share of the universe trading green: **{adv} of {n}**.")
+                st.markdown("Above 60% is a broad move. A big Avg Move with weak breadth means one or two names are carrying the tape, which is a different situation entirely.")
+        with r1c3:
+            st.metric("Participation", f"{avg_relvol:.2f}x")
+            with st.popover("ℹ️"):
+                st.markdown("**Participation**")
+                st.markdown("Mean session volume divided by each ticker's 60-day average volume.")
+                st.markdown("Above 1.0x means heavier-than-normal trading. Price moves on low participation tend not to hold.")
+        with r1c4:
+            st.metric("Dispersion", f"{dispersion:.2f}%")
+            with st.popover("ℹ️"):
+                st.markdown("**Dispersion**")
+                st.markdown("Standard deviation of intraday % change across the universe.")
+                st.markdown("Low dispersion = sector moving together on macro. High dispersion = stock-specific catalysts driving individual names, which is when this dashboard earns its keep.")
+
+        # ---------- row 2: catalyst state ----------
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+        with r2c1:
+            st.metric("Active Catalysts", catalyst_count)
+            with st.popover("ℹ️"):
+                st.markdown("**Active Catalysts**")
+                st.markdown(f"Tickers with a SurgeScore of 70 or higher: **{catalyst_count}**.")
+                st.markdown("These are names where momentum, volume, news tone, and options positioning are firing at once. Worth a look regardless of direction.")
+        with r2c2:
+            st.metric("Avg SurgeScore", f"{avg_surge:.0f}/100")
+            with st.popover("ℹ️"):
+                st.markdown("**Average SurgeScore**")
+                st.markdown("Mean composite catalyst score across the universe.")
+                st.markdown("Rising across sessions means event risk is building sector-wide, not just in one name.")
+        with r2c3:
+            st.metric("News Tone", f"{avg_news:.0f}/100")
+            with st.popover("ℹ️"):
+                st.markdown("**News Tone**")
+                st.markdown("Mean VADER sentiment across recent headlines, rescaled to 0-100.")
+                st.markdown("50 is neutral. Sustained readings outside 40-60 usually mean a real narrative is forming rather than routine coverage.")
+        with r2c4:
+            st.metric("Risk Flags", risk_flags)
+            with st.popover("ℹ️"):
+                st.markdown("**Risk Flags**")
+                st.markdown(f"Tickers moving more than ±3% **or** trading above 2x normal volume: **{risk_flags}**.")
+                st.markdown("A count of positions that need eyes on them before the close.")
+
+        # ---------- session verdict ----------
+        if avg_move > 0.35 and breadth_pct >= 60 and avg_news >= 55:
+            verdict, vcls = "Risk-On", "good"
+            verdict_note = "Broad participation with supportive news tone. Strength is sector-wide rather than isolated."
+        elif avg_move < -0.35 and breadth_pct <= 40 and avg_news <= 45:
+            verdict, vcls = "Risk-Off", "bad"
+            verdict_note = "Weakness is broad and the narrative is unsupportive. Treat bounces as suspect until breadth improves."
+        elif dispersion >= 2.0 or catalyst_count >= max(2, n // 4):
+            verdict, vcls = "Catalyst-Driven", "neutral"
+            verdict_note = "Names are moving on their own news rather than together. Screen individual tickers instead of trading the sector."
+        elif avg_relvol < 0.8 and abs(avg_move) < 0.35:
+            verdict, vcls = "Quiet Tape", "neutral"
+            verdict_note = "Light volume and little movement. No strong edge on offer today."
+        else:
+            verdict, vcls = "Balanced", "neutral"
+            verdict_note = "Mixed signals with no clear sector-wide bias. Selectivity matters more than direction here."
+
+        st.markdown(
+            f"<div class='watch-card'><span class='muted'>Session Verdict</span><br>"
+            f"<span class='{vcls}' style='font-size:20px;font-weight:700;'>{verdict}</span>"
+            f"<div style='margin-top:6px;font-size:13px;color:#cbd5e1;'>{verdict_note}</div>"
+            f"<div class='watch-meta'><span>Universe Volume: {compact_number(total_vol)}</span>"
+            f"<span>{n} tickers · {datetime.now().strftime('%H:%M:%S')}</span></div></div>",
+            unsafe_allow_html=True,
+        )
+
         st.markdown("---")
 
+        # ---------- leaders / laggards / breadth ----------
+        lead_col, lag_col, breadth_col = st.columns([1.2, 1.2, 1.6])
+
+        top3 = data.sort_values("Change", ascending=False).head(3)
+        bot3 = data.sort_values("Change", ascending=True).head(3)
+
+        with lead_col:
+            st.markdown("**Session Leaders**")
+            for _, r in top3.iterrows():
+                st.markdown(
+                    f"<div class='watch-meta'><span><b>{r['Ticker']}</b></span>"
+                    f"<span class='good'>{r['Change']:+.2f}%</span></div>",
+                    unsafe_allow_html=True,
+                )
+        with lag_col:
+            st.markdown("**Session Laggards**")
+            for _, r in bot3.iterrows():
+                st.markdown(
+                    f"<div class='watch-meta'><span><b>{r['Ticker']}</b></span>"
+                    f"<span class='bad'>{r['Change']:+.2f}%</span></div>",
+                    unsafe_allow_html=True,
+                )
+        with breadth_col:
+            st.markdown("**Advance / Decline**")
+            bfig = go.Figure(
+                go.Bar(
+                    x=[adv, flat, dec],
+                    y=["Advancing", "Flat", "Declining"],
+                    orientation="h",
+                    marker=dict(color=["#10b981", "#64748b", "#ef4444"]),
+                    text=[adv, flat, dec],
+                    textposition="auto",
+                )
+            )
+            bfig.update_layout(
+                plot_bgcolor="#071027",
+                paper_bgcolor="#071027",
+                font_color="#cbd5e1",
+                height=170,
+                margin=dict(l=0, r=10, t=10, b=10),
+                xaxis=dict(showgrid=False, visible=False),
+            )
+            st.plotly_chart(bfig, use_container_width=True)
+
+        st.markdown("---")
+
+        # ---------- category exposure ----------
+        _cat_hdr, _cat_info = st.columns([5, 0.5])
+        _cat_hdr.markdown("**Category Exposure**")
+        with _cat_info:
+            with st.popover("ℹ️"):
+                st.markdown("**Category Exposure**")
+                st.markdown("Average move and catalyst score per therapeutic area, using the groupings in `config/categories.py`.")
+                st.markdown("Shows whether a move is concentrated in one part of healthcare (GLP-1, oncology, devices) or spread across the whole sector.")
+
+        cat_rows = []
+        for cat_name, cat_tickers in categories.CATEGORIES.items():
+            if not cat_tickers:
+                continue
+            subset = data[data["Ticker"].isin(cat_tickers)]
+            if subset.empty:
+                continue
+            cat_rows.append({
+                "Category": cat_name,
+                "Names": len(subset),
+                "Avg Move": f"{subset['Change'].mean():+.2f}%",
+                "Avg Surge": f"{subset['SurgeScore'].mean():.0f}",
+                "Avg RelVol": f"{subset['RelVol'].mean():.2f}x",
+            })
+
+        if cat_rows:
+            st.dataframe(pd.DataFrame(cat_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No category constituents loaded in the current universe.")
+
+        st.markdown("---")
+
+        # ---------- catalyst watchlist ----------
+        _cw_hdr, _cw_info = st.columns([5, 0.5])
+        _cw_hdr.markdown("**Catalyst Watchlist**")
+        with _cw_info:
+            with st.popover("ℹ️"):
+                st.markdown("**Catalyst Watchlist**")
+                st.markdown("The five highest SurgeScore names with their contributing inputs broken out, so you can see *why* each one scored.")
+                st.markdown("A high score built on volume and news is a different setup than one built on options positioning alone.")
+
+        watch = data.sort_values("SurgeScore", ascending=False).head(5)
+        watch_out = pd.DataFrame({
+            "Ticker": watch["Ticker"],
+            "Price": watch["Price"].map(lambda v: f"${v:,.2f}"),
+            "Move": watch["Change"].map(lambda v: f"{v:+.2f}%"),
+            "Surge": watch["SurgeScore"].map(lambda v: f"{int(v)}/100"),
+            "RelVol": watch["RelVol"].map(lambda v: f"{v:.2f}x"),
+            "News": watch["NewsScore"].map(lambda v: f"{v:.0f}/100"),
+        })
+        st.dataframe(watch_out, use_container_width=True, hide_index=True)
+
+        st.caption(f"Universe defined in config/tickers.py · {n} tickers loaded · groupings in config/categories.py")
+
     render_executive_kpi(df)
-
-
-# ===== TAB 5: SALES / CRM =====
-with tab5:
-    def render_sales_crm():
-        st.markdown("**Sales / CRM — funnel & leaderboard (demo)**")
-        _sf_hdr, _sf_info = st.columns([5, 0.5])
-        _sf_hdr.markdown("**Sales Pipeline Funnel**")
-        with _sf_info:
-            with st.popover("ℹ️"):
-                st.markdown("**Sales Pipeline Funnel**")
-                st.markdown("- **Lead** — initial contact identified\n- **Qualified** — confirmed budget/need/timeline\n- **Proposal** — formal proposal submitted\n- **Closed** — deal won and booked\n\nConversion rate = Closed ÷ Lead. Large gaps between stages indicate where the pipeline needs attention.")
-        funnel_df = pd.DataFrame({"stage": ["Lead", "Qualified", "Proposal", "Closed"], "value": [1200, 400, 180, 45]})
-        f = px.funnel(funnel_df, x="value", y="stage")
-        st.plotly_chart(f, use_container_width=True)
-
-        _lb_hdr, _lb_info = st.columns([5, 0.5])
-        _lb_hdr.markdown("**Rep Leaderboard**")
-        with _lb_info:
-            with st.popover("ℹ️"):
-                st.markdown("**Rep Leaderboard**")
-                st.markdown("Revenue closed per sales rep this period, sorted descending. Use to identify top performers and reps who may need coaching or support.")
-        leaders = pd.DataFrame({"Rep": ["Alice", "Bob", "Cara"], "Revenue": [240000, 180000, 150000]})
-        st.table(leaders)
-
-    render_sales_crm()
-
-
-# ===== TAB 6: FP&A =====
-with tab6:
-    def render_fp_a():
-        _fp_hdr, _fp_info = st.columns([5, 0.5])
-        _fp_hdr.markdown("**FP&A — Waterfall & Variance**")
-        with _fp_info:
-            with st.popover("ℹ️"):
-                st.markdown("**Waterfall Chart — P&L Breakdown**")
-                st.markdown("Shows how each line item builds to or reduces net income:\n- **Revenue** — starting value\n- **COGS** — cost of goods sold (reduces)\n- **OpEx** — operating expenses (reduces)\n- **Tax** — tax provision (reduces)\n- **Net** — final bottom-line total\n\nGreen bars add value; red bars reduce it.")
-        measures = ["Revenue", "COGS", "OpEx", "Tax", "Net"]
-        vals = [1000000, -350000, -250000, -90000, 310000]
-        wf = go.Figure(go.Waterfall(x=measures, y=vals, measure=["relative", "relative", "relative", "relative", "total"]))
-        wf.update_layout(plot_bgcolor="#071027", paper_bgcolor="#071027", font_color="#cbd5e1")
-        st.plotly_chart(wf, use_container_width=True)
-
-    render_fp_a()
